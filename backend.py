@@ -1,77 +1,80 @@
 import random
 import time
-from pprint import pprint
+from urllib.parse import urljoin
 
 import requests
+import yt_dlp
 from bs4 import BeautifulSoup
 
-# --- CONFIG ---
-pathtrue = ""
 
+def download_with_ytdlp(url):
+    """
+    Handles both direct MP4s and M3U8 playlists.
+    It automatically stitches segments together.
+    """
+    timestamp = int(time.time())
+    rand_id = random.randint(1000, 9999)
 
-def download_video(url, filename):
-    # Ensure filename has an extension
-    if not filename.endswith(".mp4"):
-        filename += ".mp4"
+    ydl_opts = {
+        # 'best' ensures it grabs the highest quality available
+        "format": "best",
+        # Filename format: Anime_Download_TIMESTAMP_ID.extension
+        "outtmpl": f"Anime_Download_{timestamp}_{rand_id}.%(ext)s",
+        "quiet": False,  # Set to True if you want less text in the terminal
+        "no_warnings": True,
+    }
 
-    print(f"Starting download: {url}")
+    print(f"--- Attempting download: {url} ---")
     try:
-        with requests.get(url, stream=True) as r:
-            r.raise_for_status()
-            with open(filename, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        print(f"Finished downloading {filename}")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
     except Exception as e:
-        print(f"Failed to download {url}: {e}")
+        print(f"Could not download {url}: {e}")
 
 
-def find_videos(url):
+def find_all_media(url):
+    """Scans for video tags, sources, iframes, and raw links."""
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        response = requests.get(url)
+        response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.text, "html.parser")
-
-        # We use a set to avoid duplicate links
         found = set()
 
-        # Check <video>, <source>, and <iframe>
-        for tag in soup.find_all(["video", "source", "iframe"]):
-            src = tag.get("src")
-            if src:
-                # Handle relative URLs (e.g., /video.mp4 -> https://site.com/video.mp4)
-                if src.startswith("/"):
-                    from urllib.parse import urljoin
+        # 1. Look for tags that usually have video sources
+        for tag in soup.find_all(["video", "source", "iframe", "a"]):
+            src = tag.get("src") or tag.get("href")
 
-                    src = urljoin(url, src)
-                found.add(src)
+            if src:
+                full_url = urljoin(url, src)
+                # Filter for video-related extensions
+                if any(
+                    ext in full_url.lower()
+                    for ext in [".mp4", ".m3u8", ".webm", ".mkv"]
+                ):
+                    found.add(full_url)
 
         return list(found)
-    except:
+    except Exception as e:
+        print(f"Error scanning page: {e}")
         return []
 
 
-def downloadPage(url):
-    # find_videos now returns a list of all types of video links
-    links = find_videos(url)
+def start_scraper(target_url):
+    if not target_url.startswith("http"):
+        target_url = "https://" + target_url
+
+    print(f"Scanning {target_url}...")
+    links = find_all_media(target_url)
 
     if not links:
-        print("No video links found on this page.")
+        print("No video or m3u8 links detected.")
         return
 
-    # FIX: You can't pass a LIST to download_video, you must pick one or loop
+    print(f"Found {len(links)} potential links. Starting downloads...")
     for link in links:
-        # Create a unique filename
-        # time.time() is better for simple timestamps than clock_gettime
-        timestamp = int(time.time())
-        rand_id = random.randint(1000, 9999)
-        name = f"Anime_Download_{timestamp}_{rand_id}"
-
-        download_video(link, name)
+        download_with_ytdlp(link)
 
 
-# --- EXECUTION ---
-hi = input("Enter URL to scan for videos: ")
-if not hi.startswith("http"):
-    hi = "https://" + hi
-
-downloadPage(hi)
+# --- Run ---
+user_url = input("Enter the URL to scrape: ")
+start_scraper(user_url)
