@@ -1,6 +1,8 @@
 import json
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -9,8 +11,26 @@ import yt_dlp
 from bs4 import BeautifulSoup
 
 
-SETTINGS_FILE = Path(__file__).with_name("settings.json")
-DEFAULT_DOWNLOAD_DIR = Path(__file__).with_name("downloads")
+APP_NAME = "Anime Downloader"
+
+
+def get_app_data_dir():
+    if getattr(sys, "frozen", False):
+        if os.name == "nt":
+            local_app_data = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData/Local"))
+            app_dir = local_app_data / "AnimeDownloader"
+        else:
+            app_dir = Path.home() / ".anime-downloader"
+    else:
+        app_dir = Path(__file__).resolve().parent
+
+    app_dir.mkdir(parents=True, exist_ok=True)
+    return app_dir
+
+
+APP_DATA_DIR = get_app_data_dir()
+SETTINGS_FILE = APP_DATA_DIR / "settings.json"
+DEFAULT_DOWNLOAD_DIR = APP_DATA_DIR / "downloads"
 
 
 def normalize_url(url):
