@@ -27,9 +27,12 @@ class AnimeDownloaderGUI:
         self.root.title("Anime Downloader")
         self.root.geometry("860x560")
         self.root.minsize(720, 460)
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
 
         self.log_queue = queue.Queue()
         self.download_thread = None
+        self.poll_job = None
+        self.is_closing = False
 
         self.url_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready")
@@ -212,11 +215,14 @@ class AnimeDownloaderGUI:
                 backend.start_scraper(url)
         except Exception as exc:
             self.log_queue.put(f"\nUnexpected error: {exc}\n")
-            self.root.after(0, lambda: self.status_var.set("Failed"))
+            if not self.is_closing:
+                self.root.after(0, lambda: self.status_var.set("Failed"))
         else:
-            self.root.after(0, lambda: self.status_var.set("Finished"))
+            if not self.is_closing:
+                self.root.after(0, lambda: self.status_var.set("Finished"))
         finally:
-            self.root.after(0, lambda: self._set_downloading_state(False))
+            if not self.is_closing:
+                self.root.after(0, lambda: self._set_downloading_state(False))
 
     def _set_downloading_state(self, is_downloading):
         state = "disabled" if is_downloading else "normal"
@@ -232,6 +238,9 @@ class AnimeDownloaderGUI:
         self.log_text.see("end")
 
     def _poll_log_queue(self):
+        if self.is_closing:
+            return
+
         while True:
             try:
                 chunk = self.log_queue.get_nowait()
@@ -240,7 +249,27 @@ class AnimeDownloaderGUI:
             else:
                 self._append_log(chunk)
 
-        self.root.after(100, self._poll_log_queue)
+        self.poll_job = self.root.after(100, self._poll_log_queue)
+
+    def close(self):
+        self.is_closing = True
+
+        if self.poll_job is not None:
+            try:
+                self.root.after_cancel(self.poll_job)
+            except tk.TclError:
+                pass
+            self.poll_job = None
+
+        try:
+            self.root.quit()
+        except tk.TclError:
+            pass
+
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
 
 def main():
