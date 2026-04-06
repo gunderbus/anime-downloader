@@ -22,6 +22,139 @@ class QueueWriter(io.TextIOBase):
         return None
 
 
+class EpisodeSelectionDialog:
+    def __init__(self, parent, episodes):
+        self.result = None
+        self.episodes = episodes
+        self.vars = {}
+
+        self.window = tk.Toplevel(parent)
+        self.window.title("Choose Episodes")
+        self.window.geometry("420x520")
+        self.window.minsize(360, 420)
+        self.window.configure(bg="#10141c")
+        self.window.transient(parent)
+        self.window.grab_set()
+        self.window.protocol("WM_DELETE_WINDOW", self.cancel)
+
+        card = tk.Frame(self.window, bg="#171c26", padx=16, pady=16)
+        card.pack(fill="both", expand=True, padx=14, pady=14)
+
+        tk.Label(
+            card,
+            text="Select Episodes To Download",
+            bg="#171c26",
+            fg="#f4f7fb",
+            font=("TkDefaultFont", 14, "bold"),
+        ).pack(anchor="w")
+
+        tk.Label(
+            card,
+            text="All episodes are selected by default.",
+            bg="#171c26",
+            fg="#b8c2d1",
+            font=("TkDefaultFont", 10),
+        ).pack(anchor="w", pady=(6, 12))
+
+        action_row = tk.Frame(card, bg="#171c26")
+        action_row.pack(fill="x", pady=(0, 10))
+
+        ttk.Button(action_row, text="Select All", command=self.select_all).pack(
+            side="left"
+        )
+        ttk.Button(action_row, text="Clear All", command=self.clear_all).pack(
+            side="left", padx=(8, 0)
+        )
+
+        list_frame = tk.Frame(card, bg="#0f141c", highlightthickness=1, highlightbackground="#334155")
+        list_frame.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(
+            list_frame,
+            bg="#0f141c",
+            highlightthickness=0,
+            bd=0,
+        )
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        self.checkbox_frame = tk.Frame(canvas, bg="#0f141c")
+
+        self.checkbox_frame.bind(
+            "<Configure>",
+            lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+
+        canvas.create_window((0, 0), window=self.checkbox_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        for episode in episodes:
+            episode_id = episode["episode_id"]
+            label = f"Episode {episode['episode_number'] or '?'}"
+            if episode.get("is_current"):
+                label += " (from pasted link)"
+
+            var = tk.BooleanVar(value=True)
+            self.vars[episode_id] = var
+            check = tk.Checkbutton(
+                self.checkbox_frame,
+                text=label,
+                variable=var,
+                anchor="w",
+                bg="#0f141c",
+                fg="#f4f7fb",
+                selectcolor="#171c26",
+                activebackground="#0f141c",
+                activeforeground="#f4f7fb",
+                padx=10,
+                pady=6,
+                relief="flat",
+                highlightthickness=0,
+            )
+            check.pack(fill="x", anchor="w")
+
+        footer = tk.Frame(card, bg="#171c26")
+        footer.pack(fill="x", pady=(12, 0))
+
+        ttk.Button(footer, text="Cancel", command=self.cancel).pack(side="right")
+        ttk.Button(footer, text="Download Selected", command=self.confirm).pack(
+            side="right", padx=(0, 8)
+        )
+
+        self.window.wait_visibility()
+        self.window.focus_set()
+
+    def select_all(self):
+        for var in self.vars.values():
+            var.set(True)
+
+    def clear_all(self):
+        for var in self.vars.values():
+            var.set(False)
+
+    def confirm(self):
+        selected_ids = [
+            episode["episode_id"]
+            for episode in self.episodes
+            if self.vars[episode["episode_id"]].get()
+        ]
+        if not selected_ids:
+            messagebox.showwarning(
+                "No Episodes Selected",
+                "Select at least one episode to download.",
+                parent=self.window,
+            )
+            return
+
+        self.result = selected_ids
+        self.window.destroy()
+
+    def cancel(self):
+        self.result = None
+        self.window.destroy()
+
+
 class AnimeDownloaderGUI:
     def __init__(self, root):
         self.root = root
@@ -251,23 +384,50 @@ class AnimeDownloaderGUI:
 
         self.download_dir_var.set(str(saved_path))
 
+        selected_episode_ids = None
+        if backend.is_aniwatch_url(url):
+            self.status_var.set("Loading episode list...")
+            self._append_log(f"\nLoading season episodes for: {url}\n")
+            self.root.update_idletasks()
+            try:
+                episodes = backend.get_aniwatch_episode_list(url)
+            except Exception as exc:
+                self.status_var.set("Ready")
+                messagebox.showerror(
+                    "Episode List Error",
+                    f"Could not load the season episode list:\n{exc}",
+                )
+                return
+
+            dialog = EpisodeSelectionDialog(self.root, episodes)
+            self.root.wait_window(dialog.window)
+            selected_episode_ids = dialog.result
+            if selected_episode_ids is None:
+                self.status_var.set("Ready")
+                self._append_log("Episode selection cancelled.\n")
+                return
+
         self._set_downloading_state(True)
         self.status_var.set("Downloading...")
         self._append_log(f"\nStarting download for: {url}\n")
         self._append_log(f"Saving into: {saved_path}\n")
+        if selected_episode_ids is not None:
+            self._append_log(
+                f"Selected {len(selected_episode_ids)} episode(s) for download.\n"
+            )
 
         self.download_thread = threading.Thread(
             target=self._run_download,
-            args=(url,),
+            args=(url, selected_episode_ids),
             daemon=True,
         )
         self.download_thread.start()
 
-    def _run_download(self, url):
+    def _run_download(self, url, selected_episode_ids=None):
         writer = QueueWriter(self.log_queue)
         try:
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
-                backend.start_scraper(url)
+                backend.start_scraper(url, selected_episode_ids=selected_episode_ids)
         except Exception as exc:
             self.log_queue.put(f"\nUnexpected error: {exc}\n")
             if not self.is_closing:

@@ -435,9 +435,10 @@ def find_all_media(url):
         return []
 
 
-def start_scraper(target_url):
+def start_scraper(target_url, selected_episode_ids=None):
     target_url = normalize_url(target_url)
     output_dir = get_download_dir()
+    selected_episode_ids = set(selected_episode_ids or [])
 
     print(f"Scanning {target_url}...")
     print(f"Download folder: {output_dir}")
@@ -447,6 +448,16 @@ def start_scraper(target_url):
         try:
             show_name, _ = extract_media_details(target_url)
             episodes = get_aniwatch_episode_list(target_url)
+            if selected_episode_ids:
+                episodes = [
+                    episode
+                    for episode in episodes
+                    if episode["episode_id"] in selected_episode_ids
+                ]
+                if not episodes:
+                    print("No selected episodes matched this season.")
+                    return
+
             print(f"Found {len(episodes)} episodes. Starting season download...")
 
             for index, episode in enumerate(episodes, start=1):
