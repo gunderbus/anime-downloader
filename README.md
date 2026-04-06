@@ -7,3 +7,6 @@ its gonna be so cool
 also im using javafx idek its pretty buggy
 
 anyone wanna help me?
+
+
+TO RUN APP RUN THE BASH SCRIPT RUN_APP.SH
