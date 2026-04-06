@@ -1,12 +1,16 @@
-import random
+import json
 import re
 import subprocess
-import time
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 import requests
 import yt_dlp
 from bs4 import BeautifulSoup
+
+
+SETTINGS_FILE = Path(__file__).with_name("settings.json")
+DEFAULT_DOWNLOAD_DIR = Path(__file__).with_name("downloads")
 
 
 def normalize_url(url):
@@ -20,22 +24,159 @@ def is_aniwatch_url(url):
     return hostname == "aniwatchtv.to" or hostname.endswith(".aniwatchtv.to")
 
 
-def build_output_name(extension):
-    timestamp = int(time.time())
-    rand_id = random.randint(1000, 9999)
-    return f"Anime_Download_{timestamp}_{rand_id}.{extension}"
+def load_settings():
+    if not SETTINGS_FILE.exists():
+        return {"download_dir": str(DEFAULT_DOWNLOAD_DIR)}
+
+    try:
+        with SETTINGS_FILE.open("r", encoding="utf-8") as settings_file:
+            settings = json.load(settings_file)
+    except (json.JSONDecodeError, OSError):
+        return {"download_dir": str(DEFAULT_DOWNLOAD_DIR)}
+
+    settings.setdefault("download_dir", str(DEFAULT_DOWNLOAD_DIR))
+    return settings
 
 
-def download_with_ytdlp(url, extract_audio=False):
+def save_settings(settings):
+    merged_settings = load_settings()
+    merged_settings.update(settings)
+
+    with SETTINGS_FILE.open("w", encoding="utf-8") as settings_file:
+        json.dump(merged_settings, settings_file, indent=2)
+
+
+def get_download_dir():
+    settings = load_settings()
+    output_dir = Path(settings.get("download_dir") or DEFAULT_DOWNLOAD_DIR).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def set_download_dir(path):
+    resolved_path = Path(path).expanduser()
+    resolved_path.mkdir(parents=True, exist_ok=True)
+    save_settings({"download_dir": str(resolved_path)})
+    return resolved_path
+
+
+def sanitize_filename_part(value):
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", value or "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .-_")
+    return cleaned or "Anime"
+
+
+def build_episode_name(show_name=None, episode_number=None):
+    clean_show_name = sanitize_filename_part(show_name or "Anime")
+    if episode_number:
+        return sanitize_filename_part(f"{clean_show_name} - Episode {episode_number}")
+    return clean_show_name
+
+
+def build_output_path(base_name, extension):
+    clean_extension = extension.lstrip(".")
+    output_dir = get_download_dir()
+    candidate = output_dir / f"{base_name}.{clean_extension}"
+    counter = 2
+
+    while candidate.exists():
+        candidate = output_dir / f"{base_name} ({counter}).{clean_extension}"
+        counter += 1
+
+    return candidate
+
+
+def build_output_stem(base_name):
+    output_dir = get_download_dir()
+    candidate = output_dir / base_name
+    counter = 2
+
+    while any(output_dir.glob(f"{candidate.name}.*")):
+        candidate = output_dir / f"{base_name} ({counter})"
+        counter += 1
+
+    return candidate
+
+
+def extract_episode_number(text):
+    if not text:
+        return None
+
+    patterns = [
+        r"\bEpisode\s+(\d+(?:\.\d+)?)\b",
+        r"\bEP\s+(\d+(?:\.\d+)?)\b",
+        r"\bE(\d+(?:\.\d+)?)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+
+    return None
+
+
+def extract_media_details(url):
+    parsed = urlparse(url)
+    slug = parsed.path.rstrip("/").split("/")[-1]
+    show_name = None
+    episode_number = None
+
+    if slug:
+        slug_match = re.match(r"(?P<name>.+)-(\d+)$", slug)
+        if slug_match:
+            show_name = slug_match.group("name").replace("-", " ").strip()
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        response = requests.get(url, headers=headers, timeout=20)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+    except requests.RequestException:
+        return show_name, episode_number
+
+    title_sources = [
+        soup.title.string if soup.title and soup.title.string else "",
+        (soup.find("meta", property="og:title") or {}).get("content", ""),
+        (soup.find("meta", attrs={"name": "title"}) or {}).get("content", ""),
+        soup.get_text(" ", strip=True)[:5000],
+    ]
+
+    for title_text in title_sources:
+        if not title_text:
+            continue
+
+        if not episode_number:
+            episode_number = extract_episode_number(title_text)
+
+        if not show_name:
+            show_match = re.search(
+                r"Watch\s+(.+?)\s+Episode\s+\d+(?:\.\d+)?",
+                title_text,
+                re.IGNORECASE,
+            )
+            if show_match:
+                show_name = show_match.group(1).strip(" -|:")
+                break
+
+    return show_name, episode_number
+
+
+def download_with_ytdlp(url, extract_audio=False, show_name=None, episode_number=None):
     """
     Handles direct downloads with yt-dlp.
     When extract_audio is True, converts the result to MP3.
     """
-    output_name = build_output_name("%(ext)s").replace(".%(ext)s", "")
+    if not show_name or not episode_number:
+        guessed_show_name, guessed_episode_number = extract_media_details(url)
+        show_name = show_name or guessed_show_name
+        episode_number = episode_number or guessed_episode_number
+
+    base_name = build_episode_name(show_name, episode_number)
+    output_path = build_output_stem(base_name)
 
     ydl_opts = {
         "format": "bestaudio/best" if extract_audio else "best",
-        "outtmpl": f"{output_name}.%(ext)s",
+        "outtmpl": str(output_path) + ".%(ext)s",
         "quiet": False,  # Set to True if you want less text in the terminal
         "no_warnings": True,
         "noplaylist": True,
@@ -52,6 +193,7 @@ def download_with_ytdlp(url, extract_audio=False):
         ydl_opts["final_ext"] = "mp3"
 
     print(f"--- Attempting download: {url} ---")
+    print(f"Saving to: {output_path.parent}")
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -174,8 +316,11 @@ def resolve_aniwatch_stream_url(target_url):
     raise ValueError("No M3U8 stream URL was found for this Aniwatch episode.")
 
 
-def download_m3u8_to_video(stream_url):
-    output_file = build_output_name("mp4")
+def download_m3u8_to_video(stream_url, show_name=None, episode_number=None):
+    output_file = build_output_path(
+        build_episode_name(show_name, episode_number),
+        "mp4",
+    )
     ffmpeg_headers = (
         "User-Agent: Mozilla/5.0\r\n"
         "Referer: https://megacloud.blog/\r\n"
@@ -195,7 +340,7 @@ def download_m3u8_to_video(stream_url):
         "aac_adtstoasc",
         "-movflags",
         "+faststart",
-        output_file,
+        str(output_file),
     ]
 
     print(f"--- Downloading video file: {output_file} ---")
@@ -236,19 +381,22 @@ def find_all_media(url):
 
 def start_scraper(target_url):
     target_url = normalize_url(target_url)
+    output_dir = get_download_dir()
 
     print(f"Scanning {target_url}...")
+    print(f"Download folder: {output_dir}")
 
     if is_aniwatch_url(target_url):
         print("Aniwatch URL detected. Resolving dub stream and downloading video...")
         try:
+            show_name, episode_number = extract_media_details(target_url)
             _, _, language, server_name, stream_url = resolve_aniwatch_stream_url(
                 target_url
             )
             print(
                 f"Using {language.upper()} server: {server_name}. Starting video download..."
             )
-            download_m3u8_to_video(stream_url)
+            download_m3u8_to_video(stream_url, show_name, episode_number)
         except Exception as e:
             print(f"Could not resolve Aniwatch stream: {e}")
         return
@@ -260,8 +408,14 @@ def start_scraper(target_url):
         return
 
     print(f"Found {len(links)} potential links. Starting downloads...")
+    show_name, episode_number = extract_media_details(target_url)
     for link in links:
-        download_with_ytdlp(link, extract_audio=False)
+        download_with_ytdlp(
+            link,
+            extract_audio=False,
+            show_name=show_name,
+            episode_number=episode_number,
+        )
 
 
 def main():

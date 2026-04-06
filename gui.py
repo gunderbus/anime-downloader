@@ -1,9 +1,10 @@
 import contextlib
 import io
+import os
 import queue
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import backend
 
@@ -35,6 +36,7 @@ class AnimeDownloaderGUI:
         self.is_closing = False
 
         self.url_var = tk.StringVar()
+        self.download_dir_var = tk.StringVar(value=str(backend.get_download_dir()))
         self.status_var = tk.StringVar(value="Ready")
 
         self._build_ui()
@@ -119,6 +121,39 @@ class AnimeDownloaderGUI:
         self.url_entry.focus_set()
         self.url_entry.bind("<Return>", self._start_download_event)
 
+        folder_label = tk.Label(
+            controls,
+            text="Download Folder",
+            bg="#171c26",
+            fg="#f4f7fb",
+            font=("TkDefaultFont", 10, "bold"),
+        )
+        folder_label.pack(anchor="w")
+
+        folder_row = tk.Frame(controls, bg="#171c26")
+        folder_row.pack(fill="x", pady=(8, 12))
+
+        self.folder_entry = tk.Entry(
+            folder_row,
+            textvariable=self.download_dir_var,
+            font=("TkDefaultFont", 11),
+            bg="#0f141c",
+            fg="#f4f7fb",
+            insertbackground="#f4f7fb",
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#334155",
+            highlightcolor="#2463eb",
+        )
+        self.folder_entry.pack(side="left", fill="x", expand=True, ipady=10)
+
+        browse_button = ttk.Button(
+            folder_row,
+            text="Browse",
+            command=self.choose_download_dir,
+        )
+        browse_button.pack(side="left", padx=(10, 0))
+
         button_row = ttk.Frame(controls, style="Card.TFrame")
         button_row.pack(fill="x")
 
@@ -197,9 +232,29 @@ class AnimeDownloaderGUI:
             messagebox.showinfo("Download Running", "A download is already in progress.")
             return
 
+        download_dir = self.download_dir_var.get().strip()
+        if not download_dir:
+            messagebox.showwarning(
+                "Missing Folder",
+                "Choose a download folder before starting the download.",
+            )
+            return
+
+        try:
+            saved_path = backend.set_download_dir(download_dir)
+        except OSError as exc:
+            messagebox.showerror(
+                "Folder Error",
+                f"Could not use that download folder:\n{exc}",
+            )
+            return
+
+        self.download_dir_var.set(str(saved_path))
+
         self._set_downloading_state(True)
         self.status_var.set("Downloading...")
         self._append_log(f"\nStarting download for: {url}\n")
+        self._append_log(f"Saving into: {saved_path}\n")
 
         self.download_thread = threading.Thread(
             target=self._run_download,
@@ -228,6 +283,17 @@ class AnimeDownloaderGUI:
         state = "disabled" if is_downloading else "normal"
         self.download_button.configure(state=state)
         self.url_entry.configure(state=state)
+        self.folder_entry.configure(state=state)
+
+    def choose_download_dir(self):
+        initial_dir = self.download_dir_var.get().strip() or os.getcwd()
+        selected_dir = filedialog.askdirectory(
+            title="Choose Download Folder",
+            initialdir=initial_dir,
+            mustexist=False,
+        )
+        if selected_dir:
+            self.download_dir_var.set(selected_dir)
 
     def clear_log(self):
         self.log_text.delete("1.0", "end")
