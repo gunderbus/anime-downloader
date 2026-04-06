@@ -1,28 +1,49 @@
 import random
 import time
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 import yt_dlp
 from bs4 import BeautifulSoup
 
 
-def download_with_ytdlp(url):
+def normalize_url(url):
+    if not url.startswith("http"):
+        return "https://" + url
+    return url
+
+
+def is_aniwatch_url(url):
+    hostname = urlparse(url).netloc.lower()
+    return hostname == "aniwatchtv.to" or hostname.endswith(".aniwatchtv.to")
+
+
+def download_with_ytdlp(url, extract_audio=False):
     """
-    Handles both direct MP4s and M3U8 playlists.
-    It automatically stitches segments together.
+    Handles direct downloads with yt-dlp.
+    When extract_audio is True, converts the result to MP3.
     """
     timestamp = int(time.time())
     rand_id = random.randint(1000, 9999)
+    output_name = f"Anime_Download_{timestamp}_{rand_id}"
 
     ydl_opts = {
-        # 'best' ensures it grabs the highest quality available
-        "format": "best",
-        # Filename format: Anime_Download_TIMESTAMP_ID.extension
-        "outtmpl": f"Anime_Download_{timestamp}_{rand_id}.%(ext)s",
+        "format": "bestaudio/best" if extract_audio else "best",
+        "outtmpl": f"{output_name}.%(ext)s",
         "quiet": False,  # Set to True if you want less text in the terminal
         "no_warnings": True,
+        "noplaylist": True,
     }
+
+    if extract_audio:
+        ydl_opts["postprocessors"] = [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }
+        ]
+        ydl_opts["final_ext"] = "mp3"
 
     print(f"--- Attempting download: {url} ---")
     try:
@@ -60,10 +81,15 @@ def find_all_media(url):
 
 
 def start_scraper(target_url):
-    if not target_url.startswith("http"):
-        target_url = "https://" + target_url
+    target_url = normalize_url(target_url)
 
     print(f"Scanning {target_url}...")
+
+    if is_aniwatch_url(target_url):
+        print("Aniwatch URL detected. Downloading and converting to MP3...")
+        download_with_ytdlp(target_url, extract_audio=True)
+        return
+
     links = find_all_media(target_url)
 
     if not links:
@@ -72,7 +98,7 @@ def start_scraper(target_url):
 
     print(f"Found {len(links)} potential links. Starting downloads...")
     for link in links:
-        download_with_ytdlp(link)
+        download_with_ytdlp(link, extract_audio=True)
 
 
 # --- Run ---
