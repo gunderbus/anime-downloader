@@ -1,76 +1,77 @@
+import random
+import time
 from pprint import pprint
-import sys
+
 import requests
 from bs4 import BeautifulSoup
 
+# --- CONFIG ---
 pathtrue = ""
 
-def downloadFolderSet(path: str):
-    pathtrue = path
-
-def curlThis(url: str):
-    # It's good practice to add 'https://' if the user forgets it
-    if not url.startswith("http"):
-        url = "https://" + url
-
-    try:
-        response = requests.get(url)
-        diddy = response.status_code
-
-        # FIX 1: Use 'and' instead of 'or'
-        # Your old code: if > 199 or < 299 was ALWAYS true (because 500 is > 199)
-        if 200 <= diddy <= 299:
-            print("Worked")
-            print("Status code: " + str(diddy))
-
-            # FIX 2: Added parentheses () to call the method
-            return response.json()
-        else:
-            print(f"Error: Received status code {diddy}")
-            return None
-
-    except Exception as e:
-        print(f"Connection failed: {e}")
-        return None
 
 def download_video(url, filename):
-    # 'stream=True' is vital for large files
-    with requests.get(url, stream=True) as r:
-        r.raise_for_status() # Check for 404/500 errors
-        with open(filename, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-    print(f"Finished downloading {filename}")
+    # Ensure filename has an extension
+    if not filename.endswith(".mp4"):
+        filename += ".mp4"
+
+    print(f"Starting download: {url}")
+    try:
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
+            with open(filename, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        print(f"Finished downloading {filename}")
+    except Exception as e:
+        print(f"Failed to download {url}: {e}")
+
 
 def find_videos(url):
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, "html.parser")
+    try:
+        response = requests.get(url)
+        soup = BeautifulSoup(response.text, "html.parser")
 
-    # 1. Look for <video> tags
-    videos = [tag["src"] for tag in soup.find_all("video") if tag.has_attr("src")]
+        # We use a set to avoid duplicate links
+        found = set()
 
-    # 2. Look for <source> tags (common inside <video>)
-    sources = [tag["src"] for tag in soup.find_all("source") if tag.has_attr("src")]
+        # Check <video>, <source>, and <iframe>
+        for tag in soup.find_all(["video", "source", "iframe"]):
+            src = tag.get("src")
+            if src:
+                # Handle relative URLs (e.g., /video.mp4 -> https://site.com/video.mp4)
+                if src.startswith("/"):
+                    from urllib.parse import urljoin
 
-    # 3. Look for <iframe> tags (used by YouTube/Vimeo)
-    iframes = [tag["src"] for tag in soup.find_all("iframe") if tag.has_attr("src")]
+                    src = urljoin(url, src)
+                found.add(src)
 
-    return videos + sources + iframes
-
-
-def find_vidlinks(url):
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    video_extensions = (".mp4", ".m3u8")
-    links = [a["href"] for a in soup.find_all("a", href=True)]
-    video_links = [l for l in links if l.lower().endswith(video_extensions)]
-
-    return video_links
+        return list(found)
+    except:
+        return []
 
 
-hi = input("Enter URL (e.g., api.github.com): ")
-result = curlThis(hi)
+def downloadPage(url):
+    # find_videos now returns a list of all types of video links
+    links = find_videos(url)
 
-if result:
-    pprint(result)
+    if not links:
+        print("No video links found on this page.")
+        return
+
+    # FIX: You can't pass a LIST to download_video, you must pick one or loop
+    for link in links:
+        # Create a unique filename
+        # time.time() is better for simple timestamps than clock_gettime
+        timestamp = int(time.time())
+        rand_id = random.randint(1000, 9999)
+        name = f"Anime_Download_{timestamp}_{rand_id}"
+
+        download_video(link, name)
+
+
+# --- EXECUTION ---
+hi = input("Enter URL to scan for videos: ")
+if not hi.startswith("http"):
+    hi = "https://" + hi
+
+downloadPage(hi)
