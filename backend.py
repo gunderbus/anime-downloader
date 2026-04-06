@@ -1,8 +1,12 @@
 from pprint import pprint
-
+import sys
 import requests
 from bs4 import BeautifulSoup
 
+pathtrue = ""
+
+def downloadFolderSet(path: str):
+    pathtrue = path
 
 def curlThis(url: str):
     # It's good practice to add 'https://' if the user forgets it
@@ -29,6 +33,14 @@ def curlThis(url: str):
         print(f"Connection failed: {e}")
         return None
 
+def download_video(url, filename):
+    # 'stream=True' is vital for large files
+    with requests.get(url, stream=True) as r:
+        r.raise_for_status() # Check for 404/500 errors
+        with open(filename, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+    print(f"Finished downloading {filename}")
 
 def find_videos(url):
     response = requests.get(url)
