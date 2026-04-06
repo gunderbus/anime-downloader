@@ -82,23 +82,31 @@ def get_aniwatch_headers(referer):
     }
 
 
-def choose_server_id(servers_html):
+def choose_server_id(servers_html, preferred_languages=None):
+    preferred_languages = preferred_languages or ["dub", "sub"]
     preferred_servers = ["MegaCloud", "VidSrc", "T-Cloud"]
 
-    for server_name in preferred_servers:
-        pattern = (
-            r'<div class="item server-item"[^>]*data-id="([^"]+)"[^>]*>'
-            r'\s*<a [^>]*class="btn">\s*'
-            + re.escape(server_name)
-            + r"\s*</a>"
-        )
-        match = re.search(pattern, servers_html, re.IGNORECASE)
-        if match:
-            return match.group(1)
+    for language in preferred_languages:
+        for server_name in preferred_servers:
+            pattern = (
+                r'<div class="item server-item"[^>]*data-type="'
+                + re.escape(language)
+                + r'"[^>]*data-id="([^"]+)"[^>]*>'
+                r'\s*<a [^>]*class="btn">\s*'
+                + re.escape(server_name)
+                + r"\s*</a>"
+            )
+            match = re.search(pattern, servers_html, re.IGNORECASE)
+            if match:
+                return language, server_name, match.group(1)
 
-    fallback = re.search(r'data-id="([^"]+)"', servers_html)
+    fallback = re.search(
+        r'<div class="item server-item"[^>]*data-type="([^"]+)"[^>]*data-id="([^"]+)"',
+        servers_html,
+        re.IGNORECASE,
+    )
     if fallback:
-        return fallback.group(1)
+        return fallback.group(1), "unknown", fallback.group(2)
 
     raise ValueError("No supported Aniwatch server IDs were found.")
 
@@ -145,7 +153,7 @@ def resolve_aniwatch_stream_url(target_url):
     )
     servers_response.raise_for_status()
     servers_html = servers_response.json().get("html", "")
-    server_id = choose_server_id(servers_html)
+    language, server_name, server_id = choose_server_id(servers_html)
 
     sources_response = requests.get(
         f"https://aniwatchtv.to/ajax/v2/episode/sources?id={server_id}",
@@ -161,13 +169,13 @@ def resolve_aniwatch_stream_url(target_url):
     for source in source_data.get("sources", []):
         file_url = source.get("file", "")
         if file_url.endswith(".m3u8"):
-            return movie_id, episode_id, file_url
+            return movie_id, episode_id, language, server_name, file_url
 
     raise ValueError("No M3U8 stream URL was found for this Aniwatch episode.")
 
 
-def download_m3u8_to_mp3(stream_url):
-    output_file = build_output_name("mp3")
+def download_m3u8_to_video(stream_url):
+    output_file = build_output_name("mp4")
     ffmpeg_headers = (
         "User-Agent: Mozilla/5.0\r\n"
         "Referer: https://megacloud.blog/\r\n"
@@ -181,21 +189,22 @@ def download_m3u8_to_mp3(stream_url):
         ffmpeg_headers,
         "-i",
         stream_url,
-        "-vn",
-        "-acodec",
-        "libmp3lame",
-        "-b:a",
-        "192k",
+        "-c",
+        "copy",
+        "-bsf:a",
+        "aac_adtstoasc",
+        "-movflags",
+        "+faststart",
         output_file,
     ]
 
-    print(f"--- Converting stream to MP3: {output_file} ---")
+    print(f"--- Downloading video file: {output_file} ---")
     try:
         subprocess.run(command, check=True)
     except FileNotFoundError:
         print("ffmpeg is not installed or not available in PATH.")
     except subprocess.CalledProcessError as e:
-        print(f"ffmpeg failed while converting stream to MP3: {e}")
+        print(f"ffmpeg failed while downloading the video stream: {e}")
 
 
 def find_all_media(url):
@@ -231,10 +240,15 @@ def start_scraper(target_url):
     print(f"Scanning {target_url}...")
 
     if is_aniwatch_url(target_url):
-        print("Aniwatch URL detected. Resolving stream and converting to MP3...")
+        print("Aniwatch URL detected. Resolving dub stream and downloading video...")
         try:
-            _, _, stream_url = resolve_aniwatch_stream_url(target_url)
-            download_m3u8_to_mp3(stream_url)
+            _, _, language, server_name, stream_url = resolve_aniwatch_stream_url(
+                target_url
+            )
+            print(
+                f"Using {language.upper()} server: {server_name}. Starting video download..."
+            )
+            download_m3u8_to_video(stream_url)
         except Exception as e:
             print(f"Could not resolve Aniwatch stream: {e}")
         return
@@ -247,9 +261,13 @@ def start_scraper(target_url):
 
     print(f"Found {len(links)} potential links. Starting downloads...")
     for link in links:
-        download_with_ytdlp(link, extract_audio=True)
+        download_with_ytdlp(link, extract_audio=False)
 
 
-# --- Run ---
-user_url = input("Enter the URL to scrape: ")
-start_scraper(user_url)
+def main():
+    user_url = input("Enter the URL to scrape: ")
+    start_scraper(user_url)
+
+
+if __name__ == "__main__":
+    main()
