@@ -46,6 +46,17 @@ def find_videos(url):
     return videos + sources + iframes
 
 
+def find_vidlinks(url):
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    video_extensions = (".mp4", ".m3u8")
+    links = [a["href"] for a in soup.find_all("a", href=True)]
+    video_links = [l for l in links if l.lower().endswith(video_extensions)]
+
+    return video_links
+
+
 hi = input("Enter URL (e.g., api.github.com): ")
 result = curlThis(hi)
 
