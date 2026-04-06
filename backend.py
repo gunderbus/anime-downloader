@@ -216,6 +216,62 @@ def extract_movie_and_episode_ids(url):
     return movie_match.group(1), episode_id
 
 
+def get_aniwatch_episode_list(target_url):
+    movie_id, current_episode_id = extract_movie_and_episode_ids(target_url)
+    headers = get_aniwatch_headers(target_url)
+    list_response = requests.get(
+        f"https://aniwatchtv.to/ajax/v2/episode/list/{movie_id}",
+        headers=headers,
+        timeout=20,
+    )
+    list_response.raise_for_status()
+
+    episodes_html = list_response.json().get("html", "")
+    if not episodes_html:
+        raise ValueError("Aniwatch did not return an episode list.")
+
+    soup = BeautifulSoup(episodes_html, "html.parser")
+    episodes = []
+    seen_episode_ids = set()
+
+    for episode_link in soup.select("a.ep-item, a.ssl-item.ep-item"):
+        episode_id = (episode_link.get("data-id") or "").strip()
+        episode_number = (episode_link.get("data-number") or "").strip()
+        href = (episode_link.get("href") or "").strip()
+
+        if not episode_id or episode_id in seen_episode_ids:
+            continue
+
+        seen_episode_ids.add(episode_id)
+        episode_url = urljoin("https://aniwatchtv.to", href) if href else target_url
+        if href and not episode_url.startswith("http"):
+            episode_url = urljoin(target_url, href)
+
+        if not href:
+            parsed = urlparse(target_url)
+            episode_url = parsed._replace(query=f"ep={episode_id}").geturl()
+
+        episodes.append(
+            {
+                "url": episode_url,
+                "episode_id": episode_id,
+                "episode_number": episode_number or None,
+                "is_current": episode_id == current_episode_id,
+            }
+        )
+
+    if not episodes:
+        raise ValueError("Could not find any episodes in the Aniwatch episode list.")
+
+    def episode_sort_key(item):
+        try:
+            return (0, float(item["episode_number"]))
+        except (TypeError, ValueError):
+            return (1, item["episode_id"])
+
+    return sorted(episodes, key=episode_sort_key)
+
+
 def get_aniwatch_headers(referer):
     return {
         "User-Agent": "Mozilla/5.0",
@@ -387,18 +443,33 @@ def start_scraper(target_url):
     print(f"Download folder: {output_dir}")
 
     if is_aniwatch_url(target_url):
-        print("Aniwatch URL detected. Resolving dub stream and downloading video...")
+        print("Aniwatch URL detected. Resolving season episode list...")
         try:
-            show_name, episode_number = extract_media_details(target_url)
-            _, _, language, server_name, stream_url = resolve_aniwatch_stream_url(
-                target_url
-            )
-            print(
-                f"Using {language.upper()} server: {server_name}. Starting video download..."
-            )
-            download_m3u8_to_video(stream_url, show_name, episode_number)
+            show_name, _ = extract_media_details(target_url)
+            episodes = get_aniwatch_episode_list(target_url)
+            print(f"Found {len(episodes)} episodes. Starting season download...")
+
+            for index, episode in enumerate(episodes, start=1):
+                episode_url = episode["url"]
+                episode_number = episode["episode_number"]
+                marker = " (from pasted link)" if episode["is_current"] else ""
+                print(
+                    f"[{index}/{len(episodes)}] Resolving Episode {episode_number or '?'}{marker}: {episode_url}"
+                )
+                try:
+                    _, _, language, server_name, stream_url = resolve_aniwatch_stream_url(
+                        episode_url
+                    )
+                    print(
+                        f"Using {language.upper()} server: {server_name}. Starting video download..."
+                    )
+                    download_m3u8_to_video(stream_url, show_name, episode_number)
+                except Exception as e:
+                    print(
+                        f"Could not resolve Aniwatch stream for Episode {episode_number or '?'}: {e}"
+                    )
         except Exception as e:
-            print(f"Could not resolve Aniwatch stream: {e}")
+            print(f"Could not resolve Aniwatch season: {e}")
         return
 
     links = find_all_media(target_url)

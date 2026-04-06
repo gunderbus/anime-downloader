@@ -89,7 +89,7 @@ class AnimeDownloaderGUI:
         )
         ttk.Label(
             header,
-            text="Paste an Aniwatch episode link or a direct media page and download it from the backend.",
+            text="Paste one Aniwatch episode link to download the whole season, or use a direct media page for a single video.",
             style="Body.TLabel",
         ).pack(anchor="w", pady=(6, 0))
 
@@ -98,7 +98,7 @@ class AnimeDownloaderGUI:
 
         url_label = tk.Label(
             controls,
-            text="Episode URL",
+            text="Episode / Season URL",
             bg="#171c26",
             fg="#f4f7fb",
             font=("TkDefaultFont", 10, "bold"),
