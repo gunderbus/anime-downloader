@@ -1,6 +1,7 @@
 from pprint import pprint
 
 import requests
+from bs4 import BeautifulSoup
 
 
 def curlThis(url: str):
@@ -27,6 +28,22 @@ def curlThis(url: str):
     except Exception as e:
         print(f"Connection failed: {e}")
         return None
+
+
+def find_videos(url):
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    # 1. Look for <video> tags
+    videos = [tag["src"] for tag in soup.find_all("video") if tag.has_attr("src")]
+
+    # 2. Look for <source> tags (common inside <video>)
+    sources = [tag["src"] for tag in soup.find_all("source") if tag.has_attr("src")]
+
+    # 3. Look for <iframe> tags (used by YouTube/Vimeo)
+    iframes = [tag["src"] for tag in soup.find_all("iframe") if tag.has_attr("src")]
+
+    return videos + sources + iframes
 
 
 hi = input("Enter URL (e.g., api.github.com): ")
