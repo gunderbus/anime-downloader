@@ -34,6 +34,8 @@ DEFAULT_DOWNLOAD_DIR = APP_DATA_DIR / "downloads"
 SUPPORTED_STREAM_HOST = "aniwatchtv.to"
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".avi", ".mov"}
 SUBTITLE_EXTENSIONS = {".srt", ".vtt", ".ass", ".ssa"}
+MEGACLOUD_HOST = "megacloud.tv"
+MEGACLOUD_REFERER = f"https://{SUPPORTED_STREAM_HOST}/"
 
 
 def normalize_url(url):
@@ -387,34 +389,76 @@ def choose_server_id(servers_html, preferred_languages=None):
     raise ValueError("No supported Aniwatch server IDs were found.")
 
 
-def extract_megacloud_sources(embed_url):
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Origin": "https://megacloud.blog",
-        "Referer": "https://megacloud.blog/",
-    }
-    embed_response = requests.get(embed_url, headers=headers, timeout=20)
-    embed_response.raise_for_status()
+def normalize_megacloud_embed_url(embed_url):
+    parsed = urlparse(embed_url)
+    if parsed.netloc == "megacloud.blog":
+        parsed = parsed._replace(netloc=MEGACLOUD_HOST)
+    return parsed.geturl()
 
-    key_match = re.search(
-        r'([a-zA-Z0-9]{48})|x: "([a-zA-Z0-9]{16})", y: "([a-zA-Z0-9]{16})", z: "([a-zA-Z0-9]{16})"};',
-        embed_response.text,
-    )
-    if not key_match:
-        if "router.parklogic.com" in embed_response.text or "namecheap-expired" in embed_response.text:
-            raise ValueError(
-                "MegaCloud is currently redirecting to a parked domain, so the upstream provider is not exposing stream sources."
+
+def extract_megacloud_sources(embed_url, referer=None):
+    embed_url = normalize_megacloud_embed_url(embed_url)
+    client_key = None
+    request_headers = None
+    candidate_referers = []
+    if referer:
+        candidate_referers.append(canonicalize_provider_url(referer))
+    candidate_referers.extend([MEGACLOUD_REFERER, f"https://{MEGACLOUD_HOST}/"])
+
+    for candidate_referer in dict.fromkeys(candidate_referers):
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Origin": f"https://{MEGACLOUD_HOST}",
+            "Referer": candidate_referer,
+        }
+        for _attempt in range(6):
+            embed_response = requests.get(embed_url, headers=headers, timeout=20)
+            embed_response.raise_for_status()
+            embed_html = embed_response.text
+
+            key_match = re.search(r'_xy_ws\s*=\s*"([A-Za-z0-9]{48})"', embed_html)
+            if key_match:
+                client_key = key_match.group(1)
+                request_headers = headers
+                break
+
+            key_match = re.search(r'data-dpi="([A-Za-z0-9]{48})"', embed_html)
+            if key_match:
+                client_key = key_match.group(1)
+                request_headers = headers
+                break
+
+            key_match = re.search(
+                r'_lk_db\s*=\s*\{x:\s*"([A-Za-z0-9]{16})", y:\s*"([A-Za-z0-9]{16})", z:\s*"([A-Za-z0-9]{16})"\}',
+                embed_html,
             )
+            if key_match:
+                client_key = "".join(key_match.groups())
+                request_headers = headers
+                break
+
+            key_match = re.search(
+                r'<meta name="_gg_fb" content="([A-Za-z0-9]{48})"',
+                embed_html,
+            )
+            if key_match:
+                client_key = key_match.group(1)
+                request_headers = headers
+                break
+
+        if client_key:
+            break
+
+    if not client_key or not request_headers:
         raise ValueError("Could not extract MegaCloud client key.")
 
-    client_key = "".join(part for part in key_match.groups() if part)
     source_id_match = re.search(r"/embed-2/v3/e-1/([a-zA-Z0-9]+)\?", embed_url)
     if not source_id_match:
         raise ValueError("Could not extract MegaCloud source ID.")
 
     sources_response = requests.get(
-        "https://megacloud.blog/embed-2/v3/e-1/getSources",
-        headers=headers,
+        f"https://{MEGACLOUD_HOST}/embed-2/v3/e-1/getSources",
+        headers=request_headers,
         params={"id": source_id_match.group(1), "_k": client_key},
         timeout=20,
     )
@@ -455,7 +499,7 @@ def resolve_aniwatch_stream_url(target_url, preferred_language="dub"):
 
     source_data = source_payload
     if not source_data.get("sources"):
-        source_data = extract_megacloud_sources(embed_url)
+        source_data = extract_megacloud_sources(embed_url, referer=target_url)
     for source in source_data.get("sources", []):
         file_url = source.get("file", "")
         if file_url.endswith(".m3u8"):
@@ -526,8 +570,8 @@ def download_m3u8_to_video(
     )
     ffmpeg_headers = (
         "User-Agent: Mozilla/5.0\r\n"
-        "Referer: https://megacloud.blog/\r\n"
-        "Origin: https://megacloud.blog\r\n"
+        f"Referer: https://{MEGACLOUD_HOST}/\r\n"
+        f"Origin: https://{MEGACLOUD_HOST}\r\n"
     )
 
     command = [
