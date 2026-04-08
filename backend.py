@@ -31,6 +31,9 @@ def get_app_data_dir():
 APP_DATA_DIR = get_app_data_dir()
 SETTINGS_FILE = APP_DATA_DIR / "settings.json"
 DEFAULT_DOWNLOAD_DIR = APP_DATA_DIR / "downloads"
+SUPPORTED_STREAM_HOST = "aniwatchtv.to"
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".avi", ".mov"}
+SUBTITLE_EXTENSIONS = {".srt", ".vtt", ".ass", ".ssa"}
 
 
 def normalize_url(url):
@@ -39,9 +42,27 @@ def normalize_url(url):
     return url
 
 
+def canonicalize_provider_url(url):
+    parsed = urlparse(normalize_url(url))
+    hostname = parsed.netloc.lower()
+    if (
+        hostname == SUPPORTED_STREAM_HOST
+        or hostname.endswith(f".{SUPPORTED_STREAM_HOST}")
+        or "9anime" in hostname
+        or "aniwave" in hostname
+    ):
+        parsed = parsed._replace(netloc=SUPPORTED_STREAM_HOST)
+    return parsed.geturl()
+
+
 def is_aniwatch_url(url):
-    hostname = urlparse(url).netloc.lower()
-    return hostname == "aniwatchtv.to" or hostname.endswith(".aniwatchtv.to")
+    hostname = urlparse(normalize_url(url)).netloc.lower()
+    return (
+        hostname == SUPPORTED_STREAM_HOST
+        or hostname.endswith(f".{SUPPORTED_STREAM_HOST}")
+        or "9anime" in hostname
+        or "aniwave" in hostname
+    )
 
 
 def load_settings():
@@ -93,9 +114,17 @@ def build_episode_name(show_name=None, episode_number=None):
     return clean_show_name
 
 
-def build_output_path(base_name, extension):
-    clean_extension = extension.lstrip(".")
+def get_show_download_dir(show_name=None):
     output_dir = get_download_dir()
+    if show_name:
+        output_dir = output_dir / sanitize_filename_part(show_name)
+        output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def build_output_path(base_name, extension, show_name=None):
+    clean_extension = extension.lstrip(".")
+    output_dir = get_show_download_dir(show_name)
     candidate = output_dir / f"{base_name}.{clean_extension}"
     counter = 2
 
@@ -106,8 +135,8 @@ def build_output_path(base_name, extension):
     return candidate
 
 
-def build_output_stem(base_name):
-    output_dir = get_download_dir()
+def build_output_stem(base_name, show_name=None):
+    output_dir = get_show_download_dir(show_name)
     candidate = output_dir / base_name
     counter = 2
 
@@ -136,6 +165,7 @@ def extract_episode_number(text):
 
 
 def extract_media_details(url):
+    url = canonicalize_provider_url(url)
     parsed = urlparse(url)
     slug = parsed.path.rstrip("/").split("/")[-1]
     show_name = None
@@ -192,7 +222,7 @@ def download_with_ytdlp(url, extract_audio=False, show_name=None, episode_number
         episode_number = episode_number or guessed_episode_number
 
     base_name = build_episode_name(show_name, episode_number)
-    output_path = build_output_stem(base_name)
+    output_path = build_output_stem(base_name, show_name=show_name)
 
     ydl_opts = {
         "format": "bestaudio/best" if extract_audio else "best",
@@ -222,7 +252,7 @@ def download_with_ytdlp(url, extract_audio=False, show_name=None, episode_number
 
 
 def extract_movie_and_episode_ids(url):
-    parsed = urlparse(url)
+    parsed = urlparse(canonicalize_provider_url(url))
     movie_match = re.search(r"-(\d+)$", parsed.path.rstrip("/"))
     episode_id = dict(
         part.split("=", 1)
@@ -237,10 +267,11 @@ def extract_movie_and_episode_ids(url):
 
 
 def get_aniwatch_episode_list(target_url):
+    target_url = canonicalize_provider_url(target_url)
     movie_id, current_episode_id = extract_movie_and_episode_ids(target_url)
     headers = get_aniwatch_headers(target_url)
     list_response = requests.get(
-        f"https://aniwatchtv.to/ajax/v2/episode/list/{movie_id}",
+        f"https://{SUPPORTED_STREAM_HOST}/ajax/v2/episode/list/{movie_id}",
         headers=headers,
         timeout=20,
     )
@@ -263,7 +294,7 @@ def get_aniwatch_episode_list(target_url):
             continue
 
         seen_episode_ids.add(episode_id)
-        episode_url = urljoin("https://aniwatchtv.to", href) if href else target_url
+        episode_url = urljoin(f"https://{SUPPORTED_STREAM_HOST}", href) if href else target_url
         if href and not episode_url.startswith("http"):
             episode_url = urljoin(target_url, href)
 
@@ -296,7 +327,7 @@ def get_aniwatch_headers(referer):
     return {
         "User-Agent": "Mozilla/5.0",
         "X-Requested-With": "XMLHttpRequest",
-        "Referer": referer,
+        "Referer": canonicalize_provider_url(referer),
     }
 
 
@@ -360,21 +391,23 @@ def extract_megacloud_sources(embed_url):
     return sources_response.json()
 
 
-def resolve_aniwatch_stream_url(target_url):
+def resolve_aniwatch_stream_url(target_url, preferred_language="dub"):
+    target_url = canonicalize_provider_url(target_url)
     movie_id, episode_id = extract_movie_and_episode_ids(target_url)
     headers = get_aniwatch_headers(target_url)
 
     servers_response = requests.get(
-        f"https://aniwatchtv.to/ajax/v2/episode/servers?episodeId={episode_id}",
+        f"https://{SUPPORTED_STREAM_HOST}/ajax/v2/episode/servers?episodeId={episode_id}",
         headers=headers,
         timeout=20,
     )
     servers_response.raise_for_status()
     servers_html = servers_response.json().get("html", "")
-    language, server_name, server_id = choose_server_id(servers_html)
+    preferred_languages = [preferred_language, "sub" if preferred_language == "dub" else "dub"]
+    language, server_name, server_id = choose_server_id(servers_html, preferred_languages)
 
     sources_response = requests.get(
-        f"https://aniwatchtv.to/ajax/v2/episode/sources?id={server_id}",
+        f"https://{SUPPORTED_STREAM_HOST}/ajax/v2/episode/sources?id={server_id}",
         headers=headers,
         timeout=20,
     )
@@ -387,15 +420,70 @@ def resolve_aniwatch_stream_url(target_url):
     for source in source_data.get("sources", []):
         file_url = source.get("file", "")
         if file_url.endswith(".m3u8"):
-            return movie_id, episode_id, language, server_name, file_url
+            return (
+                movie_id,
+                episode_id,
+                language,
+                server_name,
+                file_url,
+                source_data.get("tracks", []),
+            )
 
     raise ValueError("No M3U8 stream URL was found for this Aniwatch episode.")
 
 
-def download_m3u8_to_video(stream_url, show_name=None, episode_number=None):
+def pick_subtitle_track(tracks):
+    subtitle_candidates = []
+    for track in tracks or []:
+        if not isinstance(track, dict):
+            continue
+        file_url = track.get("file", "")
+        kind = (track.get("kind") or "").lower()
+        label = (track.get("label") or "").lower()
+        if not file_url:
+            continue
+        if kind == "captions" or file_url.lower().endswith(tuple(SUBTITLE_EXTENSIONS)) or "caption" in label or "sub" in label:
+            subtitle_candidates.append(track)
+
+    if not subtitle_candidates:
+        return None
+
+    def subtitle_sort_key(track):
+        label = (track.get("label") or "").lower()
+        is_default = bool(track.get("default"))
+        if "english" in label or label in {"en", "eng"}:
+            return (0, 0 if is_default else 1, label)
+        return (1, 0 if is_default else 1, label)
+
+    return sorted(subtitle_candidates, key=subtitle_sort_key)[0]
+
+
+def download_subtitle_track(track, output_file):
+    subtitle_url = track.get("file", "")
+    if not subtitle_url:
+        return
+
+    parsed_path = Path(urlparse(subtitle_url).path)
+    extension = parsed_path.suffix.lower() if parsed_path.suffix.lower() in SUBTITLE_EXTENSIONS else ".vtt"
+    subtitle_path = output_file.with_suffix(extension)
+
+    print(f"Downloading subtitle track: {subtitle_path.name}")
+    response = requests.get(subtitle_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    response.raise_for_status()
+    subtitle_path.write_bytes(response.content)
+
+
+def download_m3u8_to_video(
+    stream_url,
+    show_name=None,
+    episode_number=None,
+    subtitle_tracks=None,
+    download_subtitles=False,
+):
     output_file = build_output_path(
         build_episode_name(show_name, episode_number),
         "mp4",
+        show_name=show_name,
     )
     ffmpeg_headers = (
         "User-Agent: Mozilla/5.0\r\n"
@@ -422,6 +510,15 @@ def download_m3u8_to_video(stream_url, show_name=None, episode_number=None):
     print(f"--- Downloading video file: {output_file} ---")
     try:
         subprocess.run(command, check=True)
+        if download_subtitles:
+            subtitle_track = pick_subtitle_track(subtitle_tracks)
+            if subtitle_track:
+                try:
+                    download_subtitle_track(subtitle_track, output_file)
+                except Exception as exc:
+                    print(f"Could not download subtitle track: {exc}")
+            else:
+                print("No subtitle track was available for this episode.")
     except FileNotFoundError:
         print("ffmpeg is not installed or not available in PATH.")
     except subprocess.CalledProcessError as e:
@@ -455,8 +552,8 @@ def find_all_media(url):
         return []
 
 
-def start_scraper(target_url, selected_episode_ids=None):
-    target_url = normalize_url(target_url)
+def start_scraper(target_url, selected_episode_ids=None, preferred_language="dub"):
+    target_url = canonicalize_provider_url(target_url)
     output_dir = get_download_dir()
     selected_episode_ids = set(selected_episode_ids or [])
 
@@ -488,13 +585,20 @@ def start_scraper(target_url, selected_episode_ids=None):
                     f"[{index}/{len(episodes)}] Resolving Episode {episode_number or '?'}{marker}: {episode_url}"
                 )
                 try:
-                    _, _, language, server_name, stream_url = resolve_aniwatch_stream_url(
-                        episode_url
+                    _, _, language, server_name, stream_url, subtitle_tracks = resolve_aniwatch_stream_url(
+                        episode_url,
+                        preferred_language=preferred_language,
                     )
                     print(
                         f"Using {language.upper()} server: {server_name}. Starting video download..."
                     )
-                    download_m3u8_to_video(stream_url, show_name, episode_number)
+                    download_m3u8_to_video(
+                        stream_url,
+                        show_name,
+                        episode_number,
+                        subtitle_tracks=subtitle_tracks,
+                        download_subtitles=language == "sub",
+                    )
                 except Exception as e:
                     print(
                         f"Could not resolve Aniwatch stream for Episode {episode_number or '?'}: {e}"
@@ -518,6 +622,62 @@ def start_scraper(target_url, selected_episode_ids=None):
             show_name=show_name,
             episode_number=episode_number,
         )
+
+
+def scan_download_catalog():
+    download_dir = get_download_dir()
+    catalog = {}
+
+    for file_path in sorted(download_dir.rglob("*")):
+        if not file_path.is_file() or file_path.suffix.lower() not in VIDEO_EXTENSIONS:
+            continue
+
+        relative_parts = file_path.relative_to(download_dir).parts
+        if len(relative_parts) > 1:
+            show_name = relative_parts[0]
+        else:
+            show_name = sanitize_filename_part(file_path.stem.split(" - Episode ")[0])
+
+        match = re.search(r"Episode\s+(\d+(?:\.\d+)?)", file_path.stem, re.IGNORECASE)
+        episode_label = match.group(1) if match else file_path.stem
+        subtitle_files = [
+            str(candidate)
+            for candidate in file_path.parent.glob(f"{file_path.stem}.*")
+            if candidate.suffix.lower() in SUBTITLE_EXTENSIONS
+        ]
+
+        catalog.setdefault(show_name, []).append(
+            {
+                "episode_label": episode_label,
+                "title": file_path.stem,
+                "path": str(file_path),
+                "subtitles": subtitle_files,
+            }
+        )
+
+    def episode_sort_key(item):
+        try:
+            return (0, float(item["episode_label"]))
+        except (TypeError, ValueError):
+            return (1, item["title"].lower())
+
+    return {
+        show_name: sorted(episodes, key=episode_sort_key)
+        for show_name, episodes in sorted(catalog.items(), key=lambda item: item[0].lower())
+    }
+
+
+def open_in_system_player(path):
+    target = Path(path)
+    if not target.exists():
+        raise FileNotFoundError(f"File does not exist: {target}")
+
+    if os.name == "nt":
+        os.startfile(str(target))
+        return
+
+    command = ["open", str(target)] if sys.platform == "darwin" else ["xdg-open", str(target)]
+    subprocess.Popen(command)
 
 
 def main():

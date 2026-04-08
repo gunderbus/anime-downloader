@@ -170,7 +170,10 @@ class AnimeDownloaderGUI:
 
         self.url_var = tk.StringVar()
         self.download_dir_var = tk.StringVar(value=str(backend.get_download_dir()))
+        self.language_var = tk.StringVar(value="dub")
         self.status_var = tk.StringVar(value="Ready")
+        self.catalog_status_var = tk.StringVar(value="Catalog ready")
+        self.catalog_item_lookup = {}
 
         self._build_ui()
         self._poll_log_queue()
@@ -222,12 +225,20 @@ class AnimeDownloaderGUI:
         )
         ttk.Label(
             header,
-            text="Paste one Aniwatch episode link to download the whole season, or use a direct media page for a single video.",
+            text="Paste an Aniwatch, 9anime, or Aniwave episode link to download a season, or use a direct media page for a single video.",
             style="Body.TLabel",
         ).pack(anchor="w", pady=(6, 0))
 
-        controls = ttk.Frame(outer, style="Card.TFrame", padding=18)
-        controls.pack(fill="x", pady=(18, 14))
+        notebook = ttk.Notebook(outer)
+        notebook.pack(fill="both", expand=True, pady=(18, 0))
+
+        download_tab = ttk.Frame(notebook, style="App.TFrame")
+        catalog_tab = ttk.Frame(notebook, style="App.TFrame")
+        notebook.add(download_tab, text="Downloader")
+        notebook.add(catalog_tab, text="Library")
+
+        controls = ttk.Frame(download_tab, style="Card.TFrame", padding=18)
+        controls.pack(fill="x", pady=(0, 14))
 
         url_label = tk.Label(
             controls,
@@ -287,6 +298,34 @@ class AnimeDownloaderGUI:
         )
         browse_button.pack(side="left", padx=(10, 0))
 
+        language_label = tk.Label(
+            controls,
+            text="Audio / Track Preference",
+            bg="#171c26",
+            fg="#f4f7fb",
+            font=("TkDefaultFont", 10, "bold"),
+        )
+        language_label.pack(anchor="w")
+
+        language_row = tk.Frame(controls, bg="#171c26")
+        language_row.pack(fill="x", pady=(8, 12))
+
+        for value, label in (("dub", "Dub"), ("sub", "Sub")):
+            button = tk.Radiobutton(
+                language_row,
+                text=label,
+                value=value,
+                variable=self.language_var,
+                bg="#171c26",
+                fg="#f4f7fb",
+                selectcolor="#0f141c",
+                activebackground="#171c26",
+                activeforeground="#f4f7fb",
+                relief="flat",
+                highlightthickness=0,
+            )
+            button.pack(side="left", padx=(0, 12))
+
         button_row = ttk.Frame(controls, style="Card.TFrame")
         button_row.pack(fill="x")
 
@@ -305,7 +344,7 @@ class AnimeDownloaderGUI:
         )
         clear_button.pack(side="left", padx=(10, 0))
 
-        status_card = ttk.Frame(outer, style="Card.TFrame", padding=14)
+        status_card = ttk.Frame(download_tab, style="Card.TFrame", padding=14)
         status_card.pack(fill="x", pady=(0, 14))
 
         ttk.Label(status_card, text="Status", style="Status.TLabel").pack(anchor="w")
@@ -318,7 +357,7 @@ class AnimeDownloaderGUI:
         )
         self.status_value.pack(anchor="w", pady=(6, 0))
 
-        log_card = ttk.Frame(outer, style="Card.TFrame", padding=14)
+        log_card = ttk.Frame(download_tab, style="Card.TFrame", padding=14)
         log_card.pack(fill="both", expand=True)
 
         log_label = tk.Label(
@@ -351,6 +390,72 @@ class AnimeDownloaderGUI:
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
         self._append_log("Ready. Paste a link and start the download.\n")
+        self._build_catalog_ui(catalog_tab)
+
+    def _build_catalog_ui(self, parent):
+        info_card = ttk.Frame(parent, style="Card.TFrame", padding=18)
+        info_card.pack(fill="x", pady=(0, 14))
+
+        tk.Label(
+            info_card,
+            text="Downloaded Catalog",
+            bg="#171c26",
+            fg="#f4f7fb",
+            font=("TkDefaultFont", 12, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            info_card,
+            text="Browse downloaded shows and open any episode in your system video player.",
+            bg="#171c26",
+            fg="#b8c2d1",
+            font=("TkDefaultFont", 10),
+        ).pack(anchor="w", pady=(6, 10))
+
+        action_row = ttk.Frame(info_card, style="Card.TFrame")
+        action_row.pack(fill="x")
+
+        ttk.Button(action_row, text="Refresh Library", command=self.refresh_catalog).pack(
+            side="left"
+        )
+        ttk.Button(action_row, text="Play Selected Episode", command=self.play_selected_episode).pack(
+            side="left", padx=(10, 0)
+        )
+
+        status_row = tk.Label(
+            info_card,
+            textvariable=self.catalog_status_var,
+            bg="#171c26",
+            fg="#8ad4ff",
+            font=("TkDefaultFont", 10),
+        )
+        status_row.pack(anchor="w", pady=(10, 0))
+
+        tree_card = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        tree_card.pack(fill="both", expand=True)
+
+        columns = ("episode", "file", "subtitles")
+        self.catalog_tree = ttk.Treeview(
+            tree_card,
+            columns=columns,
+            show="tree headings",
+            selectmode="browse",
+        )
+        self.catalog_tree.heading("#0", text="Show")
+        self.catalog_tree.heading("episode", text="Episode")
+        self.catalog_tree.heading("file", text="File")
+        self.catalog_tree.heading("subtitles", text="Subs")
+        self.catalog_tree.column("#0", width=190, anchor="w")
+        self.catalog_tree.column("episode", width=100, anchor="center")
+        self.catalog_tree.column("file", width=330, anchor="w")
+        self.catalog_tree.column("subtitles", width=90, anchor="center")
+        self.catalog_tree.pack(side="left", fill="both", expand=True)
+        self.catalog_tree.bind("<Double-1>", lambda _event: self.play_selected_episode())
+
+        tree_scroll = ttk.Scrollbar(tree_card, orient="vertical", command=self.catalog_tree.yview)
+        tree_scroll.pack(side="right", fill="y")
+        self.catalog_tree.configure(yscrollcommand=tree_scroll.set)
+
+        self.refresh_catalog()
 
     def _start_download_event(self, _event):
         self.start_download()
@@ -411,6 +516,7 @@ class AnimeDownloaderGUI:
         self.status_var.set("Downloading...")
         self._append_log(f"\nStarting download for: {url}\n")
         self._append_log(f"Saving into: {saved_path}\n")
+        self._append_log(f"Track preference: {self.language_var.get().upper()}\n")
         if selected_episode_ids is not None:
             self._append_log(
                 f"Selected {len(selected_episode_ids)} episode(s) for download.\n"
@@ -418,16 +524,20 @@ class AnimeDownloaderGUI:
 
         self.download_thread = threading.Thread(
             target=self._run_download,
-            args=(url, selected_episode_ids),
+            args=(url, selected_episode_ids, self.language_var.get()),
             daemon=True,
         )
         self.download_thread.start()
 
-    def _run_download(self, url, selected_episode_ids=None):
+    def _run_download(self, url, selected_episode_ids=None, preferred_language="dub"):
         writer = QueueWriter(self.log_queue)
         try:
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
-                backend.start_scraper(url, selected_episode_ids=selected_episode_ids)
+                backend.start_scraper(
+                    url,
+                    selected_episode_ids=selected_episode_ids,
+                    preferred_language=preferred_language,
+                )
         except Exception as exc:
             self.log_queue.put(f"\nUnexpected error: {exc}\n")
             if not self.is_closing:
@@ -435,6 +545,7 @@ class AnimeDownloaderGUI:
         else:
             if not self.is_closing:
                 self.root.after(0, lambda: self.status_var.set("Finished"))
+                self.root.after(0, self.refresh_catalog)
         finally:
             if not self.is_closing:
                 self.root.after(0, lambda: self._set_downloading_state(False))
@@ -453,11 +564,75 @@ class AnimeDownloaderGUI:
             mustexist=False,
         )
         if selected_dir:
-            self.download_dir_var.set(selected_dir)
+            saved_path = backend.set_download_dir(selected_dir)
+            self.download_dir_var.set(str(saved_path))
+            self.refresh_catalog()
 
     def clear_log(self):
         self.log_text.delete("1.0", "end")
         self._append_log("Log cleared.\n")
+
+    def refresh_catalog(self):
+        download_dir = self.download_dir_var.get().strip()
+        if download_dir:
+            try:
+                saved_path = backend.set_download_dir(download_dir)
+            except OSError as exc:
+                self.catalog_status_var.set(f"Could not load library folder: {exc}")
+                return
+            else:
+                self.download_dir_var.set(str(saved_path))
+
+        self.catalog_tree.delete(*self.catalog_tree.get_children())
+        self.catalog_item_lookup.clear()
+
+        catalog = backend.scan_download_catalog()
+        show_count = len(catalog)
+        episode_count = 0
+
+        for show_name, episodes in catalog.items():
+            show_id = self.catalog_tree.insert("", "end", text=show_name, values=("", "", ""))
+            for episode in episodes:
+                episode_count += 1
+                item_id = self.catalog_tree.insert(
+                    show_id,
+                    "end",
+                    text="",
+                    values=(
+                        episode["episode_label"],
+                        episode["title"],
+                        "Yes" if episode["subtitles"] else "No",
+                    ),
+                )
+                self.catalog_item_lookup[item_id] = episode
+
+            self.catalog_tree.item(show_id, open=True)
+
+        if episode_count:
+            self.catalog_status_var.set(
+                f"{show_count} show(s), {episode_count} episode(s) found in {self.download_dir_var.get().strip()}"
+            )
+        else:
+            self.catalog_status_var.set("No downloaded episodes found yet.")
+
+    def play_selected_episode(self):
+        selection = self.catalog_tree.selection()
+        if not selection:
+            messagebox.showinfo("No Episode Selected", "Pick an episode from the library first.")
+            return
+
+        episode = self.catalog_item_lookup.get(selection[0])
+        if not episode:
+            messagebox.showinfo("Select Episode", "Choose an episode row, not just the show header.")
+            return
+
+        try:
+            backend.open_in_system_player(episode["path"])
+        except Exception as exc:
+            messagebox.showerror("Playback Error", f"Could not open that episode:\n{exc}")
+            return
+
+        self.catalog_status_var.set(f"Opened: {episode['title']}")
 
     def _append_log(self, text):
         self.log_text.insert("end", text)
