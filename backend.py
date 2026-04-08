@@ -252,7 +252,8 @@ def download_with_ytdlp(url, extract_audio=False, show_name=None, episode_number
 
 
 def extract_movie_and_episode_ids(url):
-    parsed = urlparse(canonicalize_provider_url(url))
+    canonical_url = canonicalize_provider_url(url)
+    parsed = urlparse(canonical_url)
     movie_match = re.search(r"-(\d+)$", parsed.path.rstrip("/"))
     episode_id = dict(
         part.split("=", 1)
@@ -260,10 +261,36 @@ def extract_movie_and_episode_ids(url):
         if "=" in part
     ).get("ep")
 
-    if not movie_match or not episode_id:
-        raise ValueError("Could not determine Aniwatch movie or episode ID from URL.")
+    movie_id = movie_match.group(1) if movie_match else None
+    if movie_id and episode_id:
+        return movie_id, episode_id
 
-    return movie_match.group(1), episode_id
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        response = requests.get(canonical_url, headers=headers, timeout=20)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise ValueError(f"Could not load the anime page to resolve IDs: {exc}") from exc
+
+    page_html = response.text
+    if not movie_id:
+        movie_id_match = re.search(r'"anime_id"\s*:\s*"(\d+)"', page_html)
+        if not movie_id_match:
+            movie_id_match = re.search(r'id="wrapper"[^>]*data-id="(\d+)"', page_html)
+        if movie_id_match:
+            movie_id = movie_id_match.group(1)
+
+    if not episode_id:
+        episode_match = re.search(r'["\']episode_id["\']\s*[:=]\s*["\']?(\d+)', page_html)
+        if not episode_match:
+            episode_match = re.search(r'["\']current_episode["\']\s*[:=]\s*["\']?(\d+)', page_html)
+        if episode_match:
+            episode_id = episode_match.group(1)
+
+    if not movie_id:
+        raise ValueError("Could not determine the anime ID from this link.")
+
+    return movie_id, episode_id
 
 
 def get_aniwatch_episode_list(target_url):
@@ -307,7 +334,7 @@ def get_aniwatch_episode_list(target_url):
                 "url": episode_url,
                 "episode_id": episode_id,
                 "episode_number": episode_number or None,
-                "is_current": episode_id == current_episode_id,
+                "is_current": bool(current_episode_id) and episode_id == current_episode_id,
             }
         )
 
@@ -374,6 +401,10 @@ def extract_megacloud_sources(embed_url):
         embed_response.text,
     )
     if not key_match:
+        if "router.parklogic.com" in embed_response.text or "namecheap-expired" in embed_response.text:
+            raise ValueError(
+                "MegaCloud is currently redirecting to a parked domain, so the upstream provider is not exposing stream sources."
+            )
         raise ValueError("Could not extract MegaCloud client key.")
 
     client_key = "".join(part for part in key_match.groups() if part)
@@ -388,7 +419,12 @@ def extract_megacloud_sources(embed_url):
         timeout=20,
     )
     sources_response.raise_for_status()
-    return sources_response.json()
+    try:
+        return sources_response.json()
+    except ValueError as exc:
+        raise ValueError(
+            "MegaCloud returned a non-JSON source response, which usually means the upstream embed domain is no longer serving the player API."
+        ) from exc
 
 
 def resolve_aniwatch_stream_url(target_url, preferred_language="dub"):
@@ -412,11 +448,14 @@ def resolve_aniwatch_stream_url(target_url, preferred_language="dub"):
         timeout=20,
     )
     sources_response.raise_for_status()
-    embed_url = sources_response.json().get("link")
+    source_payload = sources_response.json()
+    embed_url = source_payload.get("link")
     if not embed_url:
         raise ValueError("Aniwatch did not return an embed URL.")
 
-    source_data = extract_megacloud_sources(embed_url)
+    source_data = source_payload
+    if not source_data.get("sources"):
+        source_data = extract_megacloud_sources(embed_url)
     for source in source_data.get("sources", []):
         file_url = source.get("file", "")
         if file_url.endswith(".m3u8"):
